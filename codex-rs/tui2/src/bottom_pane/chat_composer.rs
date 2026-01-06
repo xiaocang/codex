@@ -1,3 +1,4 @@
+use crate::chatwidget::Mode;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::has_ctrl_or_alt;
@@ -47,8 +48,10 @@ use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 use crate::style::user_message_style;
 use codex_common::fuzzy_match::fuzzy_match;
+use codex_core::protocol::SandboxPolicy;
 use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
+use codex_protocol::openai_models::ReasoningEffort;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -126,6 +129,10 @@ pub(crate) struct ChatComposer {
     transcript_scroll_position: Option<(usize, usize)>,
     transcript_copy_selection_key: KeyBinding,
     transcript_copy_feedback: Option<TranscriptCopyFeedback>,
+    operation_mode: Mode,
+    model_name: String,
+    reasoning_effort: Option<ReasoningEffort>,
+    sandbox_policy: Option<SandboxPolicy>,
     skills: Option<Vec<SkillMetadata>>,
     dismissed_skill_popup_token: Option<String>,
 }
@@ -179,6 +186,10 @@ impl ChatComposer {
             transcript_scroll_position: None,
             transcript_copy_selection_key: key_hint::ctrl_shift(KeyCode::Char('c')),
             transcript_copy_feedback: None,
+            operation_mode: Mode::Default,
+            model_name: String::new(),
+            reasoning_effort: None,
+            sandbox_policy: None,
             skills: None,
             dismissed_skill_popup_token: None,
         };
@@ -191,11 +202,27 @@ impl ChatComposer {
         self.skills = skills;
     }
 
+    pub(crate) fn set_model_name(&mut self, name: String) {
+        self.model_name = name;
+    }
+
+    pub(crate) fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffort>) {
+        self.reasoning_effort = effort;
+    }
+
+    pub(crate) fn set_sandbox_policy(&mut self, policy: Option<SandboxPolicy>) {
+        self.sandbox_policy = policy;
+    }
+
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        self.operation_mode = mode;
+    }
+
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
-            .unwrap_or_else(|| footer_height(footer_props));
+            .unwrap_or_else(|| footer_height(&footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         let popup_constraint = match &self.active_popup {
@@ -1542,6 +1569,10 @@ impl ChatComposer {
             esc_backtrack_hint: self.esc_backtrack_hint,
             use_shift_enter_hint: self.use_shift_enter_hint,
             is_task_running: self.is_task_running,
+            operation_mode: self.operation_mode,
+            model_name: self.model_name.clone(),
+            reasoning_effort: self.reasoning_effort,
+            sandbox_policy: self.sandbox_policy.clone(),
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
             transcript_scrolled: self.transcript_scrolled,
@@ -1840,7 +1871,7 @@ impl Renderable for ChatComposer {
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
-            .unwrap_or_else(|| footer_height(footer_props));
+            .unwrap_or_else(|| footer_height(&footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
@@ -1871,7 +1902,7 @@ impl Renderable for ChatComposer {
                 let footer_props = self.footer_props();
                 let custom_height = self.custom_footer_height();
                 let footer_hint_height =
-                    custom_height.unwrap_or_else(|| footer_height(footer_props));
+                    custom_height.unwrap_or_else(|| footer_height(&footer_props));
                 let footer_spacing = Self::footer_spacing(footer_hint_height);
                 let hint_rect = if footer_spacing > 0 && footer_hint_height > 0 {
                     let [_, hint_rect] = Layout::vertical([
@@ -1902,7 +1933,7 @@ impl Renderable for ChatComposer {
                         Line::from(spans).render_ref(custom_rect, buf);
                     }
                 } else {
-                    render_footer(hint_rect, buf, footer_props);
+                    render_footer(hint_rect, buf, &footer_props);
                 }
             }
         }
@@ -2005,7 +2036,7 @@ mod tests {
             false,
         );
 
-        let area = Rect::new(0, 0, 40, 6);
+        let area = Rect::new(0, 0, 60, 6);
         let mut buf = Buffer::empty(area);
         composer.render(area, &mut buf);
 
@@ -2064,9 +2095,10 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
+        composer.set_model_name("gpt-4.1".to_string());
         setup(&mut composer);
         let footer_props = composer.footer_props();
-        let footer_lines = footer_height(footer_props);
+        let footer_lines = footer_height(&footer_props);
         let footer_spacing = ChatComposer::footer_spacing(footer_lines);
         let height = footer_lines + footer_spacing + 8;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2630,7 +2662,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_model_first_for_mo_logic() {
+    fn slash_popup_mode_first_for_mo_logic() {
         use super::super::command_popup::CommandItem;
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -2643,10 +2675,11 @@ mod tests {
         );
         type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
 
+        // /mode comes before /model alphabetically, so it should be first
         match &composer.active_popup {
             ActivePopup::Command(popup) => match popup.selected_item() {
                 Some(CommandItem::Builtin(cmd)) => {
-                    assert_eq!(cmd.command(), "model")
+                    assert_eq!(cmd.command(), "mode")
                 }
                 Some(CommandItem::UserPrompt(_)) => {
                     panic!("unexpected prompt selected for '/mo'")

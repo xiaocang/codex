@@ -46,6 +46,14 @@ pub enum ConfigEdit {
     },
     /// Remove the value stored at the exact dotted path.
     ClearPath { segments: Vec<String> },
+    /// Set the model and reasoning effort for a specific mode (Plan or AcceptEdits).
+    /// Mode configuration is stored under `[mode]` section.
+    SetModeModel {
+        /// "plan" or "accept_edits"
+        mode_name: String,
+        model: Option<String>,
+        effort: Option<ReasoningEffort>,
+    },
 }
 
 // TODO(jif) move to a dedicated file
@@ -309,6 +317,32 @@ impl ConfigDocument {
                     *level,
                 )?;
                 Ok(true)
+            }
+            ConfigEdit::SetModeModel {
+                mode_name,
+                model,
+                effort,
+            } => {
+                // Write under [mode] section at global level
+                let mut mutated = false;
+                let model_key = format!("{mode_name}_model");
+                let effort_key = format!("{mode_name}_reasoning_effort");
+
+                if let Some(m) = model {
+                    mutated |= self.write_value(
+                        Scope::Global,
+                        &["mode", &model_key],
+                        value(m.clone()),
+                    );
+                }
+                if let Some(e) = effort {
+                    mutated |= self.write_value(
+                        Scope::Global,
+                        &["mode", &effort_key],
+                        value(e.to_string()),
+                    );
+                }
+                Ok(mutated)
             }
         }
     }
@@ -590,6 +624,21 @@ impl ConfigEditsBuilder {
 
     pub fn set_model(mut self, model: Option<&str>, effort: Option<ReasoningEffort>) -> Self {
         self.edits.push(ConfigEdit::SetModel {
+            model: model.map(ToOwned::to_owned),
+            effort,
+        });
+        self
+    }
+
+    /// Set the model and reasoning effort for a specific mode (Plan or AcceptEdits).
+    pub fn set_mode_model(
+        mut self,
+        mode_name: &str,
+        model: Option<&str>,
+        effort: Option<ReasoningEffort>,
+    ) -> Self {
+        self.edits.push(ConfigEdit::SetModeModel {
+            mode_name: mode_name.to_owned(),
             model: model.map(ToOwned::to_owned),
             effort,
         });

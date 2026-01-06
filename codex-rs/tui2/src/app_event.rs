@@ -8,6 +8,7 @@ use codex_file_search::FileMatch;
 use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
+use crate::chatwidget::Mode;
 use crate::history_cell::HistoryCell;
 
 use codex_core::protocol::AskForApproval;
@@ -65,6 +66,14 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
+    /// Persist the mode-specific model and reasoning effort to the config.
+    PersistModeModelSelection {
+        /// "plan" or "accept_edits"
+        mode_name: String,
         model: String,
         effort: Option<ReasoningEffort>,
     },
@@ -174,6 +183,24 @@ pub(crate) enum AppEvent {
     /// Open the upload consent popup for feedback after selecting a category.
     OpenFeedbackConsent {
         category: FeedbackCategory,
+    },
+
+    /// Open the model picker for a specific mode (Safe/Interactive/Agent).
+    OpenModeModelPicker {
+        mode: Mode,
+    },
+
+    /// Open the reasoning selection popup for a specific mode after picking a model.
+    OpenModeReasoningPopup {
+        mode: Mode,
+        model: ModelPreset,
+    },
+
+    /// Update the model and reasoning effort for a specific mode.
+    UpdateModeModelWithEffort {
+        mode: Mode,
+        model: String,
+        effort: Option<ReasoningEffort>,
     },
 }
 

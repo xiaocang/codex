@@ -3,6 +3,7 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -667,6 +668,20 @@ impl Default for ShellEnvironmentPolicy {
             use_profile: false,
         }
     }
+}
+
+/// Configuration for mode-specific model and reasoning effort settings.
+/// Default mode uses the global model/effort settings, so only Plan and AcceptEdits are stored.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ModeConfig {
+    /// Model to use in Plan mode.
+    pub plan_model: Option<String>,
+    /// Reasoning effort for Plan mode.
+    pub plan_reasoning_effort: Option<ReasoningEffort>,
+    /// Model to use in AcceptEdits mode.
+    pub accept_edits_model: Option<String>,
+    /// Reasoning effort for AcceptEdits mode.
+    pub accept_edits_reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[cfg(test)]

@@ -1543,7 +1543,7 @@ impl App {
                 self.current_model = model;
             }
             AppEvent::OpenReasoningPopup { model } => {
-                self.chat_widget.open_reasoning_popup(model);
+                self.chat_widget.open_reasoning_popup(model, None);
             }
             AppEvent::OpenAllModelsPopup { models } => {
                 self.chat_widget.open_all_models_popup(models);
@@ -1672,6 +1672,40 @@ impl App {
                             self.chat_widget
                                 .add_error_message(format!("Failed to save default model: {err}"));
                         }
+                    }
+                }
+            }
+            AppEvent::PersistModeModelSelection {
+                mode_name,
+                model,
+                effort,
+            } => {
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .set_mode_model(&mode_name, Some(model.as_str()), effort)
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        let mode_label = match mode_name.as_str() {
+                            "plan" => "Plan",
+                            "accept_edits" => "Accept edits",
+                            _ => &mode_name,
+                        };
+                        let mut message = format!("{mode_label} mode: model changed to {model}");
+                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                            message.push(' ');
+                            message.push_str(label);
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist mode model selection"
+                        );
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save mode model selection: {err}"
+                        ));
                     }
                 }
             }
@@ -1822,6 +1856,20 @@ impl App {
             AppEvent::OpenReviewCustomPrompt => {
                 self.chat_widget.show_review_custom_prompt();
             }
+            AppEvent::OpenModeModelPicker { mode } => {
+                self.chat_widget.open_mode_model_picker(mode);
+            }
+            AppEvent::OpenModeReasoningPopup { mode, model } => {
+                self.chat_widget.open_reasoning_popup(model, Some(mode));
+            }
+            AppEvent::UpdateModeModelWithEffort {
+                mode,
+                model,
+                effort,
+            } => {
+                self.chat_widget
+                    .update_mode_model_with_effort(mode, model, effort);
+            }
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch { cwd, changes, .. } => {
                     let _ = tui.enter_alt_screen();
@@ -1862,6 +1910,10 @@ impl App {
         Ok(true)
     }
 
+    pub(crate) fn token_usage(&self) -> codex_core::protocol::TokenUsage {
+        self.chat_widget.token_usage()
+    }
+
     fn reasoning_label(reasoning_effort: Option<ReasoningEffortConfig>) -> &'static str {
         match reasoning_effort {
             Some(ReasoningEffortConfig::Minimal) => "minimal",
@@ -1878,10 +1930,6 @@ impl App {
         reasoning_effort: Option<ReasoningEffortConfig>,
     ) -> Option<&'static str> {
         (!model.starts_with("codex-auto-")).then(|| Self::reasoning_label(reasoning_effort))
-    }
-
-    pub(crate) fn token_usage(&self) -> codex_core::protocol::TokenUsage {
-        self.chat_widget.token_usage()
     }
 
     fn on_update_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {

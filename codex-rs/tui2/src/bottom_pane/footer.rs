@@ -1,5 +1,8 @@
+use crate::chatwidget::Mode;
 #[cfg(target_os = "linux")]
 use crate::clipboard_paste::is_probably_wsl;
+use codex_core::protocol::SandboxPolicy;
+use codex_protocol::openai_models::ReasoningEffort;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::render::line_utils::prefix_lines;
@@ -15,12 +18,16 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FooterProps {
     pub(crate) mode: FooterMode,
     pub(crate) esc_backtrack_hint: bool,
     pub(crate) use_shift_enter_hint: bool,
     pub(crate) is_task_running: bool,
+    pub(crate) operation_mode: Mode,
+    pub(crate) model_name: String,
+    pub(crate) reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
     pub(crate) transcript_scrolled: bool,
@@ -68,11 +75,11 @@ pub(crate) fn reset_mode_after_activity(current: FooterMode) -> FooterMode {
     }
 }
 
-pub(crate) fn footer_height(props: FooterProps) -> u16 {
+pub(crate) fn footer_height(props: &FooterProps) -> u16 {
     footer_lines(props).len() as u16
 }
 
-pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
+pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: &FooterProps) {
     Paragraph::new(prefix_lines(
         footer_lines(props),
         " ".repeat(FOOTER_INDENT_COLS).into(),
@@ -81,7 +88,7 @@ pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
     .render(area, buf);
 }
 
-fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
+fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
     fn apply_copy_feedback(lines: &mut [Line<'static>], feedback: Option<TranscriptCopyFeedback>) {
         let Some(line) = lines.first_mut() else {
             return;
@@ -157,8 +164,72 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
             props.context_window_used_tokens,
         )],
     };
+
+    if matches!(
+        props.mode,
+        FooterMode::ShortcutSummary | FooterMode::ContextOnly
+    ) && let Some(line) = lines.first_mut()
+    {
+        prepend_mode_label(
+            line,
+            props.operation_mode,
+            &props.model_name,
+            props.reasoning_effort,
+            props.sandbox_policy.as_ref(),
+        );
+    }
+
     apply_copy_feedback(&mut lines, props.transcript_copy_feedback);
     lines
+}
+
+fn prepend_mode_label(
+    line: &mut Line<'static>,
+    operation_mode: Mode,
+    model_name: &str,
+    reasoning_effort: Option<ReasoningEffort>,
+    sandbox_policy: Option<&SandboxPolicy>,
+) {
+    let label = match operation_mode {
+        Mode::Plan => "Plan".yellow().bold(),
+        Mode::Default => "Default".green().bold(),
+        Mode::AcceptEdits => "Accept edits".magenta().bold(),
+    };
+
+    let mut spans = Vec::with_capacity(line.spans.len() + 8);
+    spans.push(label);
+    spans.push(" · ".dim());
+    spans.push(Span::from(model_name.to_string()).cyan());
+
+    // Add reasoning effort if set
+    if let Some(effort) = reasoning_effort {
+        let effort_label = match effort {
+            ReasoningEffort::None => "none",
+            ReasoningEffort::Minimal => "minimal",
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::XHigh => "x-high",
+        };
+        spans.push(" · ".dim());
+        spans.push(Span::from(effort_label).dim());
+    }
+
+    // Add sandbox policy label
+    if let Some(policy) = sandbox_policy {
+        let sandbox_label = match policy {
+            SandboxPolicy::ReadOnly => "read-only",
+            SandboxPolicy::WorkspaceWrite { .. } => "project",
+            SandboxPolicy::DangerFullAccess => "full-access",
+            SandboxPolicy::ExternalSandbox { .. } => "external",
+        };
+        spans.push(" · ".dim());
+        spans.push(Span::from(sandbox_label).dim());
+    }
+
+    spans.push(" · ".dim());
+    spans.append(&mut line.spans);
+    *line = Line::from(spans);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -206,6 +277,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     let mut newline = Line::from("");
     let mut file_paths = Line::from("");
     let mut paste_image = Line::from("");
+    let mut toggle_plan_mode = Line::from("");
     let mut edit_previous = Line::from("");
     let mut quit = Line::from("");
     let mut show_transcript = Line::from("");
@@ -217,6 +289,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
                 ShortcutId::InsertNewline => newline = text,
                 ShortcutId::FilePaths => file_paths = text,
                 ShortcutId::PasteImage => paste_image = text,
+                ShortcutId::TogglePlanMode => toggle_plan_mode = text,
                 ShortcutId::EditPrevious => edit_previous = text,
                 ShortcutId::Quit => quit = text,
                 ShortcutId::ShowTranscript => show_transcript = text,
@@ -229,6 +302,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
         newline,
         file_paths,
         paste_image,
+        toggle_plan_mode,
         edit_previous,
         quit,
         Line::from(""),
@@ -305,6 +379,7 @@ enum ShortcutId {
     InsertNewline,
     FilePaths,
     PasteImage,
+    TogglePlanMode,
     EditPrevious,
     Quit,
     ShowTranscript,
@@ -426,6 +501,15 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         label: " to paste images",
     },
     ShortcutDescriptor {
+        id: ShortcutId::TogglePlanMode,
+        bindings: &[ShortcutBinding {
+            key: key_hint::plain(KeyCode::BackTab),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " to cycle modes",
+    },
+    ShortcutDescriptor {
         id: ShortcutId::EditPrevious,
         bindings: &[ShortcutBinding {
             key: key_hint::plain(KeyCode::Esc),
@@ -462,12 +546,12 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn snapshot_footer(name: &str, props: FooterProps) {
-        let height = footer_height(props).max(1);
+        let height = footer_height(&props).max(1);
         let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, f.area().width, height);
-                render_footer(area, f.buffer_mut(), props);
+                render_footer(area, f.buffer_mut(), &props);
             })
             .unwrap();
         assert_snapshot!(name, terminal.backend());
@@ -482,6 +566,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -499,6 +587,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: true,
@@ -516,6 +608,10 @@ mod tests {
                 esc_backtrack_hint: true,
                 use_shift_enter_hint: true,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -533,6 +629,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -550,6 +650,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: true,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -567,6 +671,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -584,6 +692,10 @@ mod tests {
                 esc_backtrack_hint: true,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -601,6 +713,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: true,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
                 transcript_scrolled: false,
@@ -618,6 +734,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
                 transcript_scrolled: false,
@@ -635,6 +755,10 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 transcript_scrolled: false,

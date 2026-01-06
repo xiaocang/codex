@@ -370,6 +370,13 @@ async fn make_chatwidget_manual(
         active_cell: None,
         config: cfg,
         model: resolved_model.clone(),
+        mode: Mode::Default,
+        plan_mode_model: resolved_model.clone(),
+        accept_edits_mode_model: resolved_model.clone(),
+        plan_mode_reasoning_effort: None,
+        default_mode_reasoning_effort: None,
+        accept_edits_mode_reasoning_effort: None,
+        config_sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
         auth_manager: auth_manager.clone(),
         models_manager: Arc::new(ModelsManager::new(auth_manager)),
         session_header: SessionHeader::new(resolved_model),
@@ -449,6 +456,78 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
         s.push('\n');
     }
     s
+}
+
+#[tokio::test]
+async fn shift_tab_toggles_mode_and_models() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+
+    // Set up different models for each mode
+    chat.model = "gpt-4.1-default".to_string();
+    chat.plan_mode_model = "gpt-4.1-plan".to_string();
+    chat.accept_edits_mode_model = "gpt-4.1-accept".to_string();
+
+    // Start in Default mode, toggle to AcceptEdits mode.
+    chat.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+
+    assert_eq!(chat.mode, Mode::AcceptEdits);
+    assert_eq!(chat.bottom_pane.mode(), Mode::AcceptEdits);
+
+    // Should send AcceptEdits mode's model
+    let mut saw_mode_change = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::CodexOp(Op::OverrideTurnContext { model, .. }) = ev {
+            assert_eq!(
+                model,
+                Some("gpt-4.1-accept".to_string()),
+                "should send AcceptEdits mode's model"
+            );
+            saw_mode_change = true;
+        }
+    }
+    assert!(saw_mode_change, "expected OverrideTurnContext on mode toggle");
+    assert!(
+        op_rx.try_recv().is_err(),
+        "no Ops should be emitted directly for toggle"
+    );
+
+    // Toggle to Plan mode.
+    chat.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+
+    assert_eq!(chat.mode, Mode::Plan);
+    assert_eq!(chat.bottom_pane.mode(), Mode::Plan);
+
+    saw_mode_change = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::CodexOp(Op::OverrideTurnContext { model, .. }) = ev {
+            assert_eq!(
+                model,
+                Some("gpt-4.1-plan".to_string()),
+                "should send Plan mode's model"
+            );
+            saw_mode_change = true;
+        }
+    }
+    assert!(saw_mode_change, "expected OverrideTurnContext on mode toggle");
+
+    // Toggle back to Default.
+    chat.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+
+    assert_eq!(chat.mode, Mode::Default);
+    assert_eq!(chat.bottom_pane.mode(), Mode::Default);
+
+    saw_mode_change = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::CodexOp(Op::OverrideTurnContext { model, .. }) = ev {
+            assert_eq!(
+                model,
+                Some("gpt-4.1-default".to_string()),
+                "should send Default mode's model (self.model)"
+            );
+            saw_mode_change = true;
+        }
+    }
+    assert!(saw_mode_change, "expected OverrideTurnContext on mode toggle");
 }
 
 fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUsageInfo {
@@ -1833,7 +1912,7 @@ async fn model_reasoning_selection_popup_snapshot() {
     chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(preset, None);
 
     let popup = render_bottom_popup(&chat, 80);
     assert_snapshot!("model_reasoning_selection_popup", popup);
@@ -1847,7 +1926,7 @@ async fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
     chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::XHigh);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(preset, None);
 
     let popup = render_bottom_popup(&chat, 80);
     assert_snapshot!("model_reasoning_selection_popup_extra_high_warning", popup);
@@ -1860,7 +1939,7 @@ async fn reasoning_popup_shows_extra_high_with_space() {
     set_chatgpt_auth(&mut chat);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(preset, None);
 
     let popup = render_bottom_popup(&chat, 120);
     assert!(
@@ -1893,7 +1972,7 @@ async fn single_reasoning_option_skips_selection() {
         show_in_picker: true,
         supported_in_api: true,
     };
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(preset, None);
 
     let popup = render_bottom_popup(&chat, 80);
     assert!(
@@ -1942,7 +2021,7 @@ async fn reasoning_popup_escape_returns_to_model_popup() {
     chat.open_model_popup();
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(preset, None);
 
     let before_escape = render_bottom_popup(&chat, 80);
     assert!(before_escape.contains("Select Reasoning Level"));

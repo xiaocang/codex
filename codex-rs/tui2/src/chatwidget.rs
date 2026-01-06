@@ -284,6 +284,13 @@ pub(crate) struct ChatWidget {
     active_cell: Option<Box<dyn HistoryCell>>,
     config: Config,
     model: String,
+    mode: Mode,
+    plan_mode_model: String,
+    accept_edits_mode_model: String,
+    plan_mode_reasoning_effort: Option<ReasoningEffortConfig>,
+    default_mode_reasoning_effort: Option<ReasoningEffortConfig>,
+    accept_edits_mode_reasoning_effort: Option<ReasoningEffortConfig>,
+    config_sandbox_policy: SandboxPolicy,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
     session_header: SessionHeader,
@@ -356,6 +363,57 @@ impl From<&str> for UserMessage {
             text: text.to_string(),
             image_paths: Vec::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Plan,        // Read-only mode, planning only
+    Default,     // Read/write with approval required
+    AcceptEdits, // Read/write without approval (autonomous)
+}
+
+/// Default sandbox policy for each mode (before applying config constraints)
+fn default_sandbox_for_mode(mode: Mode) -> SandboxPolicy {
+    match mode {
+        Mode::Plan => SandboxPolicy::ReadOnly,
+        Mode::Default | Mode::AcceptEdits => SandboxPolicy::new_workspace_write_policy(),
+    }
+}
+
+/// Compare restrictiveness: ReadOnly > WorkspaceWrite > DangerFullAccess
+fn sandbox_restrictiveness(policy: &SandboxPolicy) -> u8 {
+    match policy {
+        SandboxPolicy::ReadOnly => 2,
+        SandboxPolicy::WorkspaceWrite { .. } | SandboxPolicy::ExternalSandbox { .. } => 1,
+        SandboxPolicy::DangerFullAccess => 0,
+    }
+}
+
+/// Return the more restrictive of two policies
+fn most_restrictive_sandbox(a: &SandboxPolicy, b: &SandboxPolicy) -> SandboxPolicy {
+    if sandbox_restrictiveness(a) >= sandbox_restrictiveness(b) {
+        a.clone()
+    } else {
+        b.clone()
+    }
+}
+
+/// Effective sandbox for mode, never exceeding config-specified permissions
+fn effective_sandbox_for_mode(mode: Mode, config_sandbox: &SandboxPolicy) -> SandboxPolicy {
+    let mode_default = default_sandbox_for_mode(mode);
+    most_restrictive_sandbox(&mode_default, config_sandbox)
+}
+
+/// Approval policy for each mode
+fn approval_policy_for_mode(mode: Mode) -> AskForApproval {
+    match mode {
+        // Plan mode is read-only, no approval needed since can't write
+        Mode::Plan => AskForApproval::Never,
+        // Default mode requires approval for writes
+        Mode::Default => AskForApproval::OnRequest,
+        // AcceptEdits mode auto-approves writes
+        Mode::AcceptEdits => AskForApproval::Never,
     }
 }
 
@@ -1287,6 +1345,29 @@ impl ChatWidget {
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
 
+        // Read per-mode model settings from config, fallback to global model
+        let plan_mode_model = config
+            .mode
+            .plan_model
+            .clone()
+            .unwrap_or_else(|| model.clone());
+        let accept_edits_mode_model = config
+            .mode
+            .accept_edits_model
+            .clone()
+            .unwrap_or_else(|| model.clone());
+        // Read reasoning effort from config, fallback to global default
+        let default_reasoning_effort = config.model_reasoning_effort;
+        let plan_mode_reasoning_effort = config
+            .mode
+            .plan_reasoning_effort
+            .or(default_reasoning_effort);
+        let accept_edits_mode_reasoning_effort = config
+            .mode
+            .accept_edits_reasoning_effort
+            .or(default_reasoning_effort);
+        let config_sandbox_policy = config.sandbox_policy.get().clone();
+
         let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
@@ -1304,6 +1385,13 @@ impl ChatWidget {
             active_cell: None,
             config,
             model: model.clone(),
+            mode: Mode::Default,
+            plan_mode_model,
+            accept_edits_mode_model,
+            plan_mode_reasoning_effort,
+            default_mode_reasoning_effort: default_reasoning_effort,
+            accept_edits_mode_reasoning_effort,
+            config_sandbox_policy,
             auth_manager,
             models_manager,
             session_header: SessionHeader::new(model),
@@ -1342,6 +1430,13 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
+        widget.bottom_pane.set_mode(Mode::Default);
+        widget
+            .bottom_pane
+            .set_model_name(widget.model.clone());
+        // Set initial sandbox policy based on default mode
+        let initial_sandbox = effective_sandbox_for_mode(Mode::Default, &widget.config_sandbox_policy);
+        widget.bottom_pane.set_sandbox_policy(Some(initial_sandbox));
 
         widget
     }
@@ -1371,6 +1466,29 @@ impl ChatWidget {
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
 
+        // Read per-mode model settings from config, fallback to global model
+        let plan_mode_model = config
+            .mode
+            .plan_model
+            .clone()
+            .unwrap_or_else(|| model.clone());
+        let accept_edits_mode_model = config
+            .mode
+            .accept_edits_model
+            .clone()
+            .unwrap_or_else(|| model.clone());
+        // Read reasoning effort from config, fallback to global default
+        let default_reasoning_effort = config.model_reasoning_effort;
+        let plan_mode_reasoning_effort = config
+            .mode
+            .plan_reasoning_effort
+            .or(default_reasoning_effort);
+        let accept_edits_mode_reasoning_effort = config
+            .mode
+            .accept_edits_reasoning_effort
+            .or(default_reasoning_effort);
+        let config_sandbox_policy = config.sandbox_policy.get().clone();
+
         let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
@@ -1388,6 +1506,13 @@ impl ChatWidget {
             active_cell: None,
             config,
             model: model.clone(),
+            mode: Mode::Default,
+            plan_mode_model,
+            accept_edits_mode_model,
+            plan_mode_reasoning_effort,
+            default_mode_reasoning_effort: default_reasoning_effort,
+            accept_edits_mode_reasoning_effort,
+            config_sandbox_policy,
             auth_manager,
             models_manager,
             session_header: SessionHeader::new(model),
@@ -1426,6 +1551,13 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
+        widget.bottom_pane.set_mode(Mode::Default);
+        widget
+            .bottom_pane
+            .set_model_name(widget.model.clone());
+        // Set initial sandbox policy based on default mode
+        let initial_sandbox = effective_sandbox_for_mode(Mode::Default, &widget.config_sandbox_policy);
+        widget.bottom_pane.set_sandbox_policy(Some(initial_sandbox));
 
         widget
     }
@@ -1439,6 +1571,14 @@ impl ChatWidget {
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) && c.eq_ignore_ascii_case(&'c') => {
                 self.on_ctrl_c();
+                return;
+            }
+            KeyEvent {
+                code: KeyCode::BackTab,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.toggle_mode();
                 return;
             }
             KeyEvent {
@@ -1570,6 +1710,9 @@ impl ChatWidget {
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
             }
+            SlashCommand::Mode => {
+                self.open_mode_popup();
+            }
             SlashCommand::Quit | SlashCommand::Exit => {
                 self.request_exit();
             }
@@ -1663,6 +1806,51 @@ impl ChatWidget {
                 }));
             }
         }
+    }
+
+    fn toggle_mode(&mut self) {
+        // Cycle: Plan -> Default -> AcceptEdits -> Plan
+        let next_mode = match self.mode {
+            Mode::Plan => Mode::Default,
+            Mode::Default => Mode::AcceptEdits,
+            Mode::AcceptEdits => Mode::Plan,
+        };
+        self.mode = next_mode;
+
+        // Get per-mode model and reasoning effort
+        // Default mode uses self.model (global default)
+        let (mode_model, target_effort) = match next_mode {
+            Mode::Plan => (self.plan_mode_model.clone(), self.plan_mode_reasoning_effort),
+            Mode::Default => (self.model.clone(), self.default_mode_reasoning_effort),
+            Mode::AcceptEdits => (
+                self.accept_edits_mode_model.clone(),
+                self.accept_edits_mode_reasoning_effort,
+            ),
+        };
+
+        // Compute effective sandbox and approval policy for the mode
+        let effective_sandbox = effective_sandbox_for_mode(next_mode, &self.config_sandbox_policy);
+        let approval_policy = approval_policy_for_mode(next_mode);
+
+        self.bottom_pane.set_mode(next_mode);
+        self.bottom_pane.set_model_name(mode_model.clone());
+        self.bottom_pane.set_reasoning_effort(target_effort);
+        self.bottom_pane.set_sandbox_policy(Some(effective_sandbox.clone()));
+
+        // Send mode changes with per-mode model
+        self.app_event_tx
+            .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                cwd: None,
+                approval_policy: Some(approval_policy),
+                sandbox_policy: Some(effective_sandbox),
+                model: Some(mode_model),
+                effort: Some(target_effort),
+                summary: None,
+            }));
+        self.app_event_tx
+            .send(AppEvent::UpdateReasoningEffort(target_effort));
+
+        self.request_redraw();
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {
@@ -2382,7 +2570,9 @@ impl ChatWidget {
     }
 
     /// Open a popup to choose the reasoning effort (stage 2) for the given model.
-    pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
+    /// If `mode` is `Some`, this is for mode-specific model configuration (/mode).
+    /// If `mode` is `None`, this is for global model selection (/model).
+    pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset, mode: Option<Mode>) {
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
         let supported = preset.supported_reasoning_efforts;
 
@@ -2428,10 +2618,13 @@ impl ChatWidget {
         }
 
         if choices.len() == 1 {
-            if let Some(effort) = choices.first().and_then(|c| c.stored) {
-                self.apply_model_and_effort(preset.model, Some(effort));
+            let effort = choices.first().and_then(|c| c.stored);
+            if let Some(target_mode) = mode {
+                // Mode-specific: update mode model with effort
+                self.update_mode_model_with_effort(target_mode, preset.model, effort);
             } else {
-                self.apply_model_and_effort(preset.model, None);
+                // Global: apply model and effort directly
+                self.apply_model_and_effort(preset.model, effort);
             }
             return;
         }
@@ -2445,12 +2638,38 @@ impl ChatWidget {
             .or(Some(default_effort));
 
         let model_slug = preset.model.to_string();
-        let is_current_model = self.model == preset.model;
-        let highlight_choice = if is_current_model {
-            self.config.model_reasoning_effort
+
+        // Determine if this model is the "current" one and what effort to highlight
+        let (is_current_model, highlight_choice) = if let Some(target_mode) = mode {
+            // For mode-specific: check if this is the mode's current model
+            let mode_model = match target_mode {
+                Mode::Plan => &self.plan_mode_model,
+                Mode::Default => &self.model,
+                Mode::AcceptEdits => &self.accept_edits_mode_model,
+            };
+            let mode_effort = match target_mode {
+                Mode::Plan => self.plan_mode_reasoning_effort,
+                Mode::Default => self.default_mode_reasoning_effort,
+                Mode::AcceptEdits => self.accept_edits_mode_reasoning_effort,
+            };
+            let is_current = mode_model == &preset.model;
+            let highlight = if is_current {
+                mode_effort
+            } else {
+                default_choice
+            };
+            (is_current, highlight)
         } else {
-            default_choice
+            // For global: check against global model
+            let is_current = self.model == preset.model;
+            let highlight = if is_current {
+                self.config.model_reasoning_effort
+            } else {
+                default_choice
+            };
+            (is_current, highlight)
         };
+
         let selection_choice = highlight_choice.or(default_choice);
         let initial_selected_idx = choices
             .iter()
@@ -2490,7 +2709,20 @@ impl ChatWidget {
             };
 
             let model_for_action = model_slug.clone();
-            let actions = Self::model_selection_actions(model_for_action, choice.stored);
+            let actions: Vec<SelectionAction> = if let Some(target_mode) = mode {
+                // Mode-specific action
+                let effort_for_action = choice.stored;
+                vec![Box::new(move |tx| {
+                    tx.send(AppEvent::UpdateModeModelWithEffort {
+                        mode: target_mode,
+                        model: model_for_action.clone(),
+                        effort: effort_for_action,
+                    });
+                })]
+            } else {
+                // Global model selection action
+                Self::model_selection_actions(model_for_action, choice.stored)
+            };
 
             items.push(SelectionItem {
                 name: effort_label,
@@ -2504,9 +2736,17 @@ impl ChatWidget {
         }
 
         let mut header = ColumnRenderable::new();
-        header.push(Line::from(
-            format!("Select Reasoning Level for {model_slug}").bold(),
-        ));
+        let header_text = if let Some(target_mode) = mode {
+            let mode_label = match target_mode {
+                Mode::Plan => "Safe",
+                Mode::Default => "Interactive",
+                Mode::AcceptEdits => "Agent",
+            };
+            format!("Select Reasoning Level for {model_slug} ({mode_label} mode)")
+        } else {
+            format!("Select Reasoning Level for {model_slug}")
+        };
+        header.push(Line::from(header_text.bold()));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
@@ -3297,6 +3537,178 @@ impl ChatWidget {
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
+    }
+
+    /// Open the mode configuration popup showing Plan/Edit modes
+    /// with their current model assignments.
+    pub(crate) fn open_mode_popup(&mut self) {
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        // Plan mode
+        let is_plan_current = self.mode == Mode::Plan;
+        items.push(SelectionItem {
+            name: format!("Plan [{}]", self.plan_mode_model),
+            description: Some("Read-only mode, planning only".to_string()),
+            is_current: is_plan_current,
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenModeModelPicker { mode: Mode::Plan });
+            })],
+            dismiss_on_select: false,
+            ..Default::default()
+        });
+
+        // Default mode
+        let is_default_current = self.mode == Mode::Default;
+        items.push(SelectionItem {
+            name: format!("Default [{}]", self.model),
+            description: Some("Read/write with approval required".to_string()),
+            is_current: is_default_current,
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenModeModelPicker {
+                    mode: Mode::Default,
+                });
+            })],
+            dismiss_on_select: false,
+            ..Default::default()
+        });
+
+        // Accept edits mode
+        let is_accept_edits_current = self.mode == Mode::AcceptEdits;
+        items.push(SelectionItem {
+            name: format!("Accept edits [{}]", self.accept_edits_mode_model),
+            description: Some("Read/write without approval (autonomous)".to_string()),
+            is_current: is_accept_edits_current,
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenModeModelPicker {
+                    mode: Mode::AcceptEdits,
+                });
+            })],
+            dismiss_on_select: false,
+            ..Default::default()
+        });
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Configure Mode Models".to_string()),
+            subtitle: Some("Select a mode to change its model and reasoning".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    /// Open the model picker for a specific mode.
+    pub(crate) fn open_mode_model_picker(&mut self, mode: Mode) {
+        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models(&self.config) {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try again in a moment.".to_string(),
+                    None,
+                );
+                return;
+            }
+        };
+
+        let current_model = match mode {
+            Mode::Plan => &self.plan_mode_model,
+            Mode::Default => &self.model,
+            Mode::AcceptEdits => &self.accept_edits_mode_model,
+        };
+
+        let mode_label = match mode {
+            Mode::Plan => "Plan",
+            Mode::Default => "Default",
+            Mode::AcceptEdits => "Accept edits",
+        };
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+        for preset in presets.iter() {
+            let is_current = &preset.model == current_model;
+            let preset_clone = preset.clone();
+            items.push(SelectionItem {
+                name: preset.display_name.to_string(),
+                description: Some(preset.model.clone()),
+                is_current,
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenModeReasoningPopup {
+                        mode,
+                        model: preset_clone.clone(),
+                    });
+                })],
+                dismiss_on_select: false,
+                ..Default::default()
+            });
+        }
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some(format!("Select model for {mode_label} mode")),
+            footer_hint: Some("Press enter to select reasoning effort, or esc to dismiss.".into()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("Type to search models".to_string()),
+            ..Default::default()
+        });
+    }
+
+    /// Update the model and reasoning effort for a specific mode.
+    pub(crate) fn update_mode_model_with_effort(
+        &mut self,
+        mode: Mode,
+        model: String,
+        effort: Option<ReasoningEffortConfig>,
+    ) {
+        match mode {
+            Mode::Plan => {
+                self.plan_mode_model = model.clone();
+                self.plan_mode_reasoning_effort = effort;
+            }
+            Mode::Default => {
+                self.model = model.clone();
+                self.default_mode_reasoning_effort = effort;
+            }
+            Mode::AcceptEdits => {
+                self.accept_edits_mode_model = model.clone();
+                self.accept_edits_mode_reasoning_effort = effort;
+            }
+        };
+
+        // If this is the currently active mode, also update the active model and footer
+        if self.mode == mode {
+            self.apply_model_and_effort(model.clone(), effort);
+            self.bottom_pane.set_model_name(match mode {
+                Mode::Plan => self.plan_mode_model.clone(),
+                Mode::Default => self.model.clone(),
+                Mode::AcceptEdits => self.accept_edits_mode_model.clone(),
+            });
+            self.bottom_pane.set_reasoning_effort(effort);
+        }
+
+        // Persist the mode model selection to config
+        match mode {
+            Mode::Default => {
+                // Default mode uses the global model setting
+                self.app_event_tx.send(AppEvent::PersistModelSelection {
+                    model,
+                    effort,
+                });
+            }
+            Mode::Plan => {
+                self.app_event_tx.send(AppEvent::PersistModeModelSelection {
+                    mode_name: "plan".to_string(),
+                    model,
+                    effort,
+                });
+            }
+            Mode::AcceptEdits => {
+                self.app_event_tx.send(AppEvent::PersistModeModelSelection {
+                    mode_name: "accept_edits".to_string(),
+                    model,
+                    effort,
+                });
+            }
+        }
+
+        self.request_redraw();
     }
 
     pub(crate) fn token_usage(&self) -> TokenUsage {

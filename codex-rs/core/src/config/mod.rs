@@ -2,6 +2,7 @@ use crate::auth::AuthCredentialsStoreMode;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config::types::History;
 use crate::config::types::McpServerConfig;
+use crate::config::types::ModeConfig;
 use crate::config::types::Notice;
 use crate::config::types::Notifications;
 use crate::config::types::OtelConfig;
@@ -355,6 +356,9 @@ pub struct Config {
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: crate::config::types::OtelConfig,
+
+    /// Mode-specific model and reasoning effort settings (for Plan and AcceptEdits modes).
+    pub mode: ModeConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -830,6 +834,10 @@ pub struct ConfigToml {
     pub experimental_use_freeform_apply_patch: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
+
+    /// Mode-specific model and reasoning effort settings (for Plan and AcceptEdits modes).
+    #[serde(default)]
+    pub mode: Option<ModeConfig>,
 }
 
 impl From<ConfigToml> for UserSavedConfig {
@@ -1433,6 +1441,7 @@ impl Config {
                     trace_exporter,
                 }
             },
+            mode: cfg.mode.unwrap_or_default(),
         };
         Ok(config)
     }
@@ -3214,6 +3223,7 @@ model_verbosity = "high"
                 tui_scroll_wheel_like_max_duration_ms: None,
                 tui_scroll_invert: false,
                 otel: OtelConfig::default(),
+                mode: ModeConfig::default(),
             },
             o3_profile_config
         );
@@ -3297,6 +3307,7 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             otel: OtelConfig::default(),
+            mode: ModeConfig::default(),
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -3395,6 +3406,7 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             otel: OtelConfig::default(),
+            mode: ModeConfig::default(),
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -3479,6 +3491,7 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             otel: OtelConfig::default(),
+            mode: ModeConfig::default(),
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);

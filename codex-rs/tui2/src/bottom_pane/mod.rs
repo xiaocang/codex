@@ -3,12 +3,14 @@ use std::path::PathBuf;
 
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::queued_user_messages::QueuedUserMessages;
+use crate::chatwidget::Mode;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
 use crate::tui::FrameRequester;
 use bottom_pane_view::BottomPaneView;
 use codex_core::features::Features;
+use codex_core::protocol::SandboxPolicy;
 use codex_core::skills::model::SkillMetadata;
 use codex_file_search::FileMatch;
 use crossterm::event::KeyCode;
@@ -80,6 +82,7 @@ pub(crate) struct BottomPane {
     queued_user_messages: QueuedUserMessages,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    mode: Mode,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -128,6 +131,7 @@ impl BottomPane {
             animations_enabled,
             context_window_percent: None,
             context_window_used_tokens: None,
+            mode: Mode::Default,
         }
     }
 
@@ -144,6 +148,31 @@ impl BottomPane {
         self.composer.skills()
     }
 
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.composer.set_mode(mode);
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_model_name(&mut self, name: String) {
+        self.composer.set_model_name(name);
+    }
+
+    pub(crate) fn set_reasoning_effort(
+        &mut self,
+        effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) {
+        self.composer.set_reasoning_effort(effort);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_sandbox_policy(&mut self, policy: Option<SandboxPolicy>) {
+        self.composer.set_sandbox_policy(policy);
+        self.request_redraw();
+    }
+
     #[cfg(test)]
     pub(crate) fn context_window_percent(&self) -> Option<i64> {
         self.context_window_percent
@@ -152,6 +181,11 @@ impl BottomPane {
     #[cfg(test)]
     pub(crate) fn context_window_used_tokens(&self) -> Option<i64> {
         self.context_window_used_tokens
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mode(&self) -> Mode {
+        self.mode
     }
 
     fn active_view(&self) -> Option<&dyn BottomPaneView> {
