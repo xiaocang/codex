@@ -304,7 +304,9 @@ mod tests {
     use crate::codex::make_session_and_context;
     use crate::exec_env::create_env;
     use crate::is_safe_command::is_known_safe_command;
+    #[cfg(windows)]
     use crate::powershell::try_find_powershell_executable_blocking;
+    #[cfg(windows)]
     use crate::powershell::try_find_pwsh_executable_blocking;
     use crate::sandboxing::SandboxPermissions;
     use crate::shell::Shell;
@@ -331,22 +333,28 @@ mod tests {
         };
         assert_safe(&zsh_shell, "ls -la");
 
-        if let Some(path) = try_find_powershell_executable_blocking() {
-            let powershell = Shell {
-                shell_type: ShellType::PowerShell,
-                shell_path: path.to_path_buf(),
-                shell_snapshot: None,
-            };
-            assert_safe(&powershell, "ls -Name");
-        }
+        // PowerShell tests only run on Windows because is_safe_command_windows
+        // invokes the actual PowerShell executable to parse the script AST.
+        // On WSL, the path may point to a Windows executable that can't be run this way.
+        #[cfg(windows)]
+        {
+            if let Some(path) = try_find_powershell_executable_blocking() {
+                let powershell = Shell {
+                    shell_type: ShellType::PowerShell,
+                    shell_path: path.to_path_buf(),
+                    shell_snapshot: None,
+                };
+                assert_safe(&powershell, "ls -Name");
+            }
 
-        if let Some(path) = try_find_pwsh_executable_blocking() {
-            let pwsh = Shell {
-                shell_type: ShellType::PowerShell,
-                shell_path: path.to_path_buf(),
-                shell_snapshot: None,
-            };
-            assert_safe(&pwsh, "ls -Name");
+            if let Some(path) = try_find_pwsh_executable_blocking() {
+                let pwsh = Shell {
+                    shell_type: ShellType::PowerShell,
+                    shell_path: path.to_path_buf(),
+                    shell_snapshot: None,
+                };
+                assert_safe(&pwsh, "ls -Name");
+            }
         }
     }
 

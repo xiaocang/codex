@@ -1623,6 +1623,7 @@ persistence = "none"
                 scroll_wheel_tick_detect_max_ms: None,
                 scroll_wheel_like_max_duration_ms: None,
                 scroll_invert: false,
+                alt_screen: true,
             }
         );
     }

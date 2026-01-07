@@ -1,17 +1,19 @@
 use crate::chatwidget::Mode;
 #[cfg(target_os = "linux")]
 use crate::clipboard_paste::is_probably_wsl;
-use codex_core::protocol::SandboxPolicy;
-use codex_protocol::openai_models::ReasoningEffort;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::render::line_utils::prefix_lines;
+use crate::status::RateLimitSnapshotDisplay;
 use crate::status::format_tokens_compact;
 use crate::transcript_copy_action::TranscriptCopyFeedback;
 use crate::ui_consts::FOOTER_INDENT_COLS;
+use codex_core::protocol::SandboxPolicy;
+use codex_protocol::openai_models::ReasoningEffort;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -30,6 +32,7 @@ pub(crate) struct FooterProps {
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
+    pub(crate) rate_limit_snapshot: Option<RateLimitSnapshotDisplay>,
     pub(crate) transcript_scrolled: bool,
     pub(crate) transcript_selection_active: bool,
     pub(crate) transcript_scroll_position: Option<(usize, usize)>,
@@ -116,6 +119,7 @@ fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
             let mut line = context_window_line(
                 props.context_window_percent,
                 props.context_window_used_tokens,
+                props.rate_limit_snapshot.as_ref(),
             );
             line.push_span(" · ".dim());
             line.extend(vec![
@@ -162,6 +166,7 @@ fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
         FooterMode::ContextOnly => vec![context_window_line(
             props.context_window_percent,
             props.context_window_used_tokens,
+            props.rate_limit_snapshot.as_ref(),
         )],
     };
 
@@ -359,18 +364,55 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
-    if let Some(percent) = percent {
+fn context_window_line(
+    percent: Option<i64>,
+    used_tokens: Option<i64>,
+    rate_limit_snapshot: Option<&RateLimitSnapshotDisplay>,
+) -> Line<'static> {
+    let mut line = if let Some(percent) = percent {
         let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
-    }
-
-    if let Some(tokens) = used_tokens {
+        Line::from(vec![Span::from(format!("{percent}% context left")).dim()])
+    } else if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
-        return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
+        Line::from(vec![Span::from(format!("{used_fmt} used")).dim()])
+    } else {
+        Line::from(vec![Span::from("100% context left").dim()])
+    };
+
+    // Append rate limit quota if available
+    if let Some(quota_span) = rate_limit_snapshot.and_then(format_rate_limit_quota) {
+        line.push_span(" · ".dim());
+        line.push_span(quota_span);
     }
 
-    Line::from(vec![Span::from("100% context left").dim()])
+    line
+}
+
+/// Format the rate limit quota for footer display.
+/// Shows the reset time and remaining percentage (e.g., "14:30 · 70%").
+/// Color-coded: red (≤10%), yellow (≤25%), dim (otherwise).
+fn format_rate_limit_quota(snapshot: &RateLimitSnapshotDisplay) -> Option<Span<'static>> {
+    // Prioritize primary (5h) limit, then secondary (weekly)
+    let window = snapshot.primary.as_ref().or(snapshot.secondary.as_ref())?;
+
+    let remaining = (100.0_f64 - window.used_percent).round() as i64;
+    let remaining = remaining.clamp(0, 100);
+
+    let style = if remaining <= 10 {
+        Style::default().red()
+    } else if remaining <= 25 {
+        Style::default().cyan()
+    } else {
+        Style::default().dim()
+    };
+
+    let text = if let Some(reset_time) = &window.resets_at {
+        format!("{reset_time} · {remaining}%")
+    } else {
+        format!("{remaining}%")
+    };
+
+    Some(Span::styled(text, style))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -541,6 +583,8 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status::RateLimitWindowDisplay;
+    use chrono::Local;
     use insta::assert_snapshot;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -572,6 +616,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -593,6 +638,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: true,
                 transcript_selection_active: true,
                 transcript_scroll_position: Some((3, 42)),
@@ -614,6 +660,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -635,6 +682,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -656,6 +704,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -677,6 +726,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -698,6 +748,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -719,6 +770,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -740,6 +792,7 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
@@ -761,12 +814,242 @@ mod tests {
                 sandbox_policy: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                rate_limit_snapshot: None,
                 transcript_scrolled: false,
                 transcript_selection_active: false,
                 transcript_scroll_position: None,
                 transcript_copy_selection_key: key_hint::ctrl_shift(KeyCode::Char('c')),
                 transcript_copy_feedback: Some(TranscriptCopyFeedback::Copied),
             },
+        );
+
+        // Footer with rate limit quota - high remaining (dim style)
+        snapshot_footer(
+            "footer_with_rate_limit_high",
+            FooterProps {
+                mode: FooterMode::ShortcutSummary,
+                esc_backtrack_hint: false,
+                use_shift_enter_hint: false,
+                is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
+                context_window_percent: Some(50),
+                context_window_used_tokens: None,
+                rate_limit_snapshot: Some(RateLimitSnapshotDisplay {
+                    captured_at: Local::now(),
+                    primary: Some(RateLimitWindowDisplay {
+                        used_percent: 30.0, // 70% remaining - dim
+                        resets_at: Some("14:30".to_string()),
+                        window_minutes: Some(300),
+                    }),
+                    secondary: None,
+                    credits: None,
+                }),
+                transcript_scrolled: false,
+                transcript_selection_active: false,
+                transcript_scroll_position: None,
+                transcript_copy_selection_key: key_hint::ctrl_shift(KeyCode::Char('c')),
+                transcript_copy_feedback: None,
+            },
+        );
+
+        // Footer with rate limit quota - warning zone (yellow style)
+        snapshot_footer(
+            "footer_with_rate_limit_warning",
+            FooterProps {
+                mode: FooterMode::ShortcutSummary,
+                esc_backtrack_hint: false,
+                use_shift_enter_hint: false,
+                is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
+                context_window_percent: Some(50),
+                context_window_used_tokens: None,
+                rate_limit_snapshot: Some(RateLimitSnapshotDisplay {
+                    captured_at: Local::now(),
+                    primary: Some(RateLimitWindowDisplay {
+                        used_percent: 80.0, // 20% remaining - yellow
+                        resets_at: Some("15:00".to_string()),
+                        window_minutes: Some(300),
+                    }),
+                    secondary: None,
+                    credits: None,
+                }),
+                transcript_scrolled: false,
+                transcript_selection_active: false,
+                transcript_scroll_position: None,
+                transcript_copy_selection_key: key_hint::ctrl_shift(KeyCode::Char('c')),
+                transcript_copy_feedback: None,
+            },
+        );
+
+        // Footer with rate limit quota - critical zone (red style)
+        snapshot_footer(
+            "footer_with_rate_limit_critical",
+            FooterProps {
+                mode: FooterMode::ShortcutSummary,
+                esc_backtrack_hint: false,
+                use_shift_enter_hint: false,
+                is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
+                context_window_percent: Some(50),
+                context_window_used_tokens: None,
+                rate_limit_snapshot: Some(RateLimitSnapshotDisplay {
+                    captured_at: Local::now(),
+                    primary: Some(RateLimitWindowDisplay {
+                        used_percent: 95.0, // 5% remaining - red
+                        resets_at: Some("15:30".to_string()),
+                        window_minutes: Some(300),
+                    }),
+                    secondary: None,
+                    credits: None,
+                }),
+                transcript_scrolled: false,
+                transcript_selection_active: false,
+                transcript_scroll_position: None,
+                transcript_copy_selection_key: key_hint::ctrl_shift(KeyCode::Char('c')),
+                transcript_copy_feedback: None,
+            },
+        );
+
+        // Footer with rate limit quota - weekly window (secondary fallback)
+        snapshot_footer(
+            "footer_with_rate_limit_weekly",
+            FooterProps {
+                mode: FooterMode::ShortcutSummary,
+                esc_backtrack_hint: false,
+                use_shift_enter_hint: false,
+                is_task_running: false,
+                operation_mode: Mode::Default,
+                model_name: "gpt-4.1".to_string(),
+                reasoning_effort: None,
+                sandbox_policy: None,
+                context_window_percent: Some(50),
+                context_window_used_tokens: None,
+                rate_limit_snapshot: Some(RateLimitSnapshotDisplay {
+                    captured_at: Local::now(),
+                    primary: None,
+                    secondary: Some(RateLimitWindowDisplay {
+                        used_percent: 40.0, // 60% remaining
+                        resets_at: Some("12:00 on 5 Jan".to_string()),
+                        window_minutes: Some(10080),
+                    }),
+                    credits: None,
+                }),
+                transcript_scrolled: false,
+                transcript_selection_active: false,
+                transcript_scroll_position: None,
+                transcript_copy_selection_key: key_hint::ctrl_shift(KeyCode::Char('c')),
+                transcript_copy_feedback: None,
+            },
+        );
+    }
+
+    #[test]
+    fn format_rate_limit_quota_tests() {
+        // Test: With reset time shows "time · percentage"
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: Some(RateLimitWindowDisplay {
+                used_percent: 30.0,
+                resets_at: Some("14:30".to_string()),
+                window_minutes: Some(300),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        let result = format_rate_limit_quota(&snapshot);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "14:30 · 70%");
+
+        // Test: Without reset time shows just percentage
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: Some(RateLimitWindowDisplay {
+                used_percent: 30.0,
+                resets_at: None,
+                window_minutes: Some(300),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        let result = format_rate_limit_quota(&snapshot);
+        assert_eq!(result.unwrap().content, "70%");
+
+        // Test: 90% used = 10% remaining (red boundary)
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: Some(RateLimitWindowDisplay {
+                used_percent: 90.0,
+                resets_at: Some("15:00".to_string()),
+                window_minutes: Some(300),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        let result = format_rate_limit_quota(&snapshot);
+        assert_eq!(result.unwrap().content, "15:00 · 10%");
+
+        // Test: No primary, use secondary
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: None,
+            secondary: Some(RateLimitWindowDisplay {
+                used_percent: 50.0,
+                resets_at: Some("12:00 on 5 Jan".to_string()),
+                window_minutes: Some(10080),
+            }),
+            credits: None,
+        };
+        let result = format_rate_limit_quota(&snapshot);
+        assert_eq!(result.unwrap().content, "12:00 on 5 Jan · 50%");
+
+        // Test: No windows at all returns None
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+        assert!(format_rate_limit_quota(&snapshot).is_none());
+
+        // Test: 100% used = 0% remaining (clamped)
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: Some(RateLimitWindowDisplay {
+                used_percent: 100.0,
+                resets_at: Some("16:00".to_string()),
+                window_minutes: Some(300),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        assert_eq!(
+            format_rate_limit_quota(&snapshot).unwrap().content,
+            "16:00 · 0%"
+        );
+
+        // Test: 0% used = 100% remaining
+        let snapshot = RateLimitSnapshotDisplay {
+            captured_at: Local::now(),
+            primary: Some(RateLimitWindowDisplay {
+                used_percent: 0.0,
+                resets_at: Some("17:00".to_string()),
+                window_minutes: Some(300),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        assert_eq!(
+            format_rate_limit_quota(&snapshot).unwrap().content,
+            "17:00 · 100%"
         );
     }
 }
