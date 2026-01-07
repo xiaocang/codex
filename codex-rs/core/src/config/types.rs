@@ -506,6 +506,18 @@ pub struct Tui {
     /// wheel and trackpad input.
     #[serde(default)]
     pub scroll_invert: bool,
+
+    /// Use the terminal's alternate screen for TUI2.
+    ///
+    /// When `true` (default), the TUI uses the alternate screen buffer, which provides a clean
+    /// full-screen experience but doesn't maintain scrollback history in terminal multiplexers
+    /// like tmux.
+    ///
+    /// When `false`, the TUI renders inline without switching to the alternate screen. This
+    /// allows tmux scrollback (`prefix + [`) to work, but TUI output will remain in your
+    /// terminal history after exiting.
+    #[serde(default = "default_true")]
+    pub alt_screen: bool,
 }
 
 const fn default_true() -> bool {

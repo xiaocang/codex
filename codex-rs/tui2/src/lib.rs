@@ -519,7 +519,13 @@ async fn run_ratatui_app(
     // the entire viewport can be used without polluting normal scrollback. This
     // mirrors the behavior of the legacy TUI but keeps inline mode available
     // for smaller prompts like onboarding and model migration.
-    let _ = tui.enter_alt_screen();
+    //
+    // When `tui.alt_screen = false` in config.toml, skip the alternate screen
+    // to allow tmux scrollback (`prefix + [`) to work.
+    let use_alt_screen = config.tui_alt_screen;
+    if use_alt_screen {
+        let _ = tui.enter_alt_screen();
+    }
 
     let app_result = App::run(
         &mut tui,
@@ -534,7 +540,9 @@ async fn run_ratatui_app(
     )
     .await;
 
-    let _ = tui.leave_alt_screen();
+    if use_alt_screen {
+        let _ = tui.leave_alt_screen();
+    }
     restore();
     if let Ok(exit_info) = &app_result {
         let mut stdout = std::io::stdout();
