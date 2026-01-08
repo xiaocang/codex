@@ -1431,11 +1431,10 @@ impl ChatWidget {
 
         widget.prefetch_rate_limits();
         widget.bottom_pane.set_mode(Mode::Default);
-        widget
-            .bottom_pane
-            .set_model_name(widget.model.clone());
+        widget.bottom_pane.set_model_name(widget.model.clone());
         // Set initial sandbox policy based on default mode
-        let initial_sandbox = effective_sandbox_for_mode(Mode::Default, &widget.config_sandbox_policy);
+        let initial_sandbox =
+            effective_sandbox_for_mode(Mode::Default, &widget.config_sandbox_policy);
         widget.bottom_pane.set_sandbox_policy(Some(initial_sandbox));
 
         widget
@@ -1552,11 +1551,10 @@ impl ChatWidget {
 
         widget.prefetch_rate_limits();
         widget.bottom_pane.set_mode(Mode::Default);
-        widget
-            .bottom_pane
-            .set_model_name(widget.model.clone());
+        widget.bottom_pane.set_model_name(widget.model.clone());
         // Set initial sandbox policy based on default mode
-        let initial_sandbox = effective_sandbox_for_mode(Mode::Default, &widget.config_sandbox_policy);
+        let initial_sandbox =
+            effective_sandbox_for_mode(Mode::Default, &widget.config_sandbox_policy);
         widget.bottom_pane.set_sandbox_policy(Some(initial_sandbox));
 
         widget
@@ -1820,7 +1818,10 @@ impl ChatWidget {
         // Get per-mode model and reasoning effort
         // Default mode uses self.model (global default)
         let (mode_model, target_effort) = match next_mode {
-            Mode::Plan => (self.plan_mode_model.clone(), self.plan_mode_reasoning_effort),
+            Mode::Plan => (
+                self.plan_mode_model.clone(),
+                self.plan_mode_reasoning_effort,
+            ),
             Mode::Default => (self.model.clone(), self.default_mode_reasoning_effort),
             Mode::AcceptEdits => (
                 self.accept_edits_mode_model.clone(),
@@ -1835,7 +1836,8 @@ impl ChatWidget {
         self.bottom_pane.set_mode(next_mode);
         self.bottom_pane.set_model_name(mode_model.clone());
         self.bottom_pane.set_reasoning_effort(target_effort);
-        self.bottom_pane.set_sandbox_policy(Some(effective_sandbox.clone()));
+        self.bottom_pane
+            .set_sandbox_policy(Some(effective_sandbox.clone()));
 
         // Send mode changes with per-mode model
         self.app_event_tx
@@ -3687,10 +3689,8 @@ impl ChatWidget {
         match mode {
             Mode::Default => {
                 // Default mode uses the global model setting
-                self.app_event_tx.send(AppEvent::PersistModelSelection {
-                    model,
-                    effort,
-                });
+                self.app_event_tx
+                    .send(AppEvent::PersistModelSelection { model, effort });
             }
             Mode::Plan => {
                 self.app_event_tx.send(AppEvent::PersistModeModelSelection {

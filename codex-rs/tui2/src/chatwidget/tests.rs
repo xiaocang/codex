@@ -485,7 +485,10 @@ async fn shift_tab_toggles_mode_and_models() {
             saw_mode_change = true;
         }
     }
-    assert!(saw_mode_change, "expected OverrideTurnContext on mode toggle");
+    assert!(
+        saw_mode_change,
+        "expected OverrideTurnContext on mode toggle"
+    );
     assert!(
         op_rx.try_recv().is_err(),
         "no Ops should be emitted directly for toggle"
@@ -508,7 +511,10 @@ async fn shift_tab_toggles_mode_and_models() {
             saw_mode_change = true;
         }
     }
-    assert!(saw_mode_change, "expected OverrideTurnContext on mode toggle");
+    assert!(
+        saw_mode_change,
+        "expected OverrideTurnContext on mode toggle"
+    );
 
     // Toggle back to Default.
     chat.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
@@ -527,7 +533,10 @@ async fn shift_tab_toggles_mode_and_models() {
             saw_mode_change = true;
         }
     }
-    assert!(saw_mode_change, "expected OverrideTurnContext on mode toggle");
+    assert!(
+        saw_mode_change,
+        "expected OverrideTurnContext on mode toggle"
+    );
 }
 
 fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUsageInfo {

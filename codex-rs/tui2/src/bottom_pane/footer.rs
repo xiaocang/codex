@@ -196,7 +196,7 @@ fn prepend_mode_label(
     sandbox_policy: Option<&SandboxPolicy>,
 ) {
     let label = match operation_mode {
-        Mode::Plan => "Plan".yellow().bold(),
+        Mode::Plan => "Plan".cyan().bold(),
         Mode::Default => "Default".green().bold(),
         Mode::AcceptEdits => "Accept edits".magenta().bold(),
     };

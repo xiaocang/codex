@@ -329,11 +329,8 @@ impl ConfigDocument {
                 let effort_key = format!("{mode_name}_reasoning_effort");
 
                 if let Some(m) = model {
-                    mutated |= self.write_value(
-                        Scope::Global,
-                        &["mode", &model_key],
-                        value(m.clone()),
-                    );
+                    mutated |=
+                        self.write_value(Scope::Global, &["mode", &model_key], value(m.clone()));
                 }
                 if let Some(e) = effort {
                     mutated |= self.write_value(

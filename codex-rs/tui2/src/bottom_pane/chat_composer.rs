@@ -2,6 +2,7 @@ use crate::chatwidget::Mode;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::has_ctrl_or_alt;
+use crate::status::RateLimitSnapshotDisplay;
 use crate::transcript_copy_action::TranscriptCopyFeedback;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -135,6 +136,7 @@ pub(crate) struct ChatComposer {
     sandbox_policy: Option<SandboxPolicy>,
     skills: Option<Vec<SkillMetadata>>,
     dismissed_skill_popup_token: Option<String>,
+    rate_limit_snapshot: Option<RateLimitSnapshotDisplay>,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -192,6 +194,7 @@ impl ChatComposer {
             sandbox_policy: None,
             skills: None,
             dismissed_skill_popup_token: None,
+            rate_limit_snapshot: None,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -212,6 +215,10 @@ impl ChatComposer {
 
     pub(crate) fn set_sandbox_policy(&mut self, policy: Option<SandboxPolicy>) {
         self.sandbox_policy = policy;
+    }
+
+    pub(crate) fn set_rate_limit_snapshot(&mut self, snapshot: Option<RateLimitSnapshotDisplay>) {
+        self.rate_limit_snapshot = snapshot;
     }
 
     pub(crate) fn set_mode(&mut self, mode: Mode) {
@@ -1580,6 +1587,7 @@ impl ChatComposer {
             transcript_scroll_position: self.transcript_scroll_position,
             transcript_copy_selection_key: self.transcript_copy_selection_key,
             transcript_copy_feedback: self.transcript_copy_feedback,
+            rate_limit_snapshot: self.rate_limit_snapshot.clone(),
         }
     }
 
