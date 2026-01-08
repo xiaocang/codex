@@ -6,8 +6,12 @@ use std::io::stdout;
 use std::panic;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+
+/// Global setting for mouse capture, used to restore state after suspend/resume.
+static MOUSE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 use crossterm::SynchronizedUpdate;
 use crossterm::event::DisableBracketedPaste;
@@ -56,7 +60,7 @@ pub(crate) mod scrolling;
 /// A type alias for the terminal type used in this application
 pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
 
-pub fn set_modes() -> Result<()> {
+pub fn set_modes(mouse: bool) -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
 
     enable_raw_mode()?;
@@ -78,7 +82,9 @@ pub fn set_modes() -> Result<()> {
     let _ = execute!(stdout(), EnableFocusChange);
     // Enable application mouse mode so scroll events are delivered as
     // Mouse events instead of arrow keys.
-    let _ = execute!(stdout(), EnableMouseCapture);
+    if mouse {
+        let _ = execute!(stdout(), EnableMouseCapture);
+    }
     Ok(())
 }
 
@@ -96,20 +102,27 @@ pub fn restore() -> Result<()> {
 }
 
 /// Initialize the terminal (inline viewport; no always-on scrollback printing).
-pub fn init() -> Result<Terminal> {
+pub fn init(mouse: bool) -> Result<Terminal> {
     if !stdin().is_terminal() {
         return Err(std::io::Error::other("stdin is not a terminal"));
     }
     if !stdout().is_terminal() {
         return Err(std::io::Error::other("stdout is not a terminal"));
     }
-    set_modes()?;
+    // Store the mouse setting globally so it can be restored after suspend/resume.
+    let _ = MOUSE_ENABLED.set(mouse);
+    set_modes(mouse)?;
 
     set_panic_hook();
 
     let backend = CrosstermBackend::new(stdout());
     let tui = CustomTerminal::with_options(backend)?;
     Ok(tui)
+}
+
+/// Returns whether mouse capture was enabled at init time. Defaults to true if not set.
+pub(crate) fn mouse_enabled() -> bool {
+    MOUSE_ENABLED.get().copied().unwrap_or(true)
 }
 
 fn set_panic_hook() {

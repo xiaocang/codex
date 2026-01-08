@@ -518,6 +518,14 @@ pub struct Tui {
     /// terminal history after exiting.
     #[serde(default = "default_true")]
     pub alt_screen: bool,
+
+    /// Enable mouse capture in the TUI.
+    ///
+    /// When `true` (default), the TUI captures mouse events for scrolling and text selection.
+    /// When `false`, mouse events are passed through to the terminal, allowing native terminal
+    /// text selection and scrolling.
+    #[serde(default = "default_true")]
+    pub mouse: bool,
 }
 
 const fn default_true() -> bool {

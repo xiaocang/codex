@@ -245,6 +245,14 @@ pub struct Config {
     /// Same as `tui.alt_screen` in `config.toml`.
     pub tui_alt_screen: bool,
 
+    /// Enable mouse capture in TUI2.
+    ///
+    /// When `true` (default), the TUI captures mouse events for scrolling and text selection.
+    /// When `false`, mouse events are passed through to the terminal.
+    ///
+    /// Same as `tui.mouse` in `config.toml`.
+    pub tui_mouse: bool,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -1435,6 +1443,7 @@ impl Config {
                 .and_then(|t| t.scroll_wheel_like_max_duration_ms),
             tui_scroll_invert: cfg.tui.as_ref().map(|t| t.scroll_invert).unwrap_or(false),
             tui_alt_screen: cfg.tui.as_ref().map(|t| t.alt_screen).unwrap_or(true),
+            tui_mouse: cfg.tui.as_ref().map(|t| t.mouse).unwrap_or(true),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1624,6 +1633,7 @@ persistence = "none"
                 scroll_wheel_like_max_duration_ms: None,
                 scroll_invert: false,
                 alt_screen: true,
+                mouse: true,
             }
         );
     }
@@ -3233,6 +3243,7 @@ model_verbosity = "high"
                 tui_scroll_wheel_like_max_duration_ms: None,
                 tui_scroll_invert: false,
                 tui_alt_screen: true,
+                tui_mouse: true,
                 otel: OtelConfig::default(),
                 mode: ModeConfig::default(),
             },
@@ -3318,6 +3329,7 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             tui_alt_screen: true,
+            tui_mouse: true,
             otel: OtelConfig::default(),
             mode: ModeConfig::default(),
         };
@@ -3418,6 +3430,7 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             tui_alt_screen: true,
+            tui_mouse: true,
             otel: OtelConfig::default(),
             mode: ModeConfig::default(),
         };
@@ -3504,6 +3517,7 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             tui_alt_screen: true,
+            tui_mouse: true,
             otel: OtelConfig::default(),
             mode: ModeConfig::default(),
         };
