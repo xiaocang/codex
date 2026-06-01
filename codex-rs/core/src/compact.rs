@@ -69,6 +69,24 @@ pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bo
     provider.supports_remote_compaction()
 }
 
+/// Whether a failed remote compaction attempt should fall back to local summarization
+/// compaction instead of aborting the turn.
+///
+/// The remote `/responses/compact` endpoint frequently fails at the transport layer for
+/// large requests (e.g. "stream disconnected before completion: error sending request for
+/// url ...") and can also reject models it does not yet support (502). Local compaction
+/// uses the regular `/responses` streaming path and self-heals on a near-full window, so it
+/// can recover from these cases.
+///
+/// We reuse [`CodexErr::is_retryable`]: it includes transient transport/server errors
+/// (`Stream`, `Timeout`, `UnexpectedStatus`/5xx, `InternalServerError`, ...) and excludes
+/// terminal conditions where local compaction would not help or must surface to the user
+/// (`UsageLimitReached`, `ContextWindowExceeded`, `TurnAborted`, `Interrupted`,
+/// `InvalidRequest`, `CyberPolicy`, ...).
+pub(crate) fn remote_compaction_failure_is_recoverable_locally(err: &CodexErr) -> bool {
+    err.is_retryable()
+}
+
 pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,

@@ -8,6 +8,7 @@ use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
 use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use crate::compact::remote_compaction_failure_is_recoverable_locally;
 use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
@@ -156,11 +157,19 @@ async fn run_remote_compact_task_inner(
         .track(sess.as_ref(), status, codex_error, analytics_details)
         .await;
     if let Err(err) = result {
-        sess.track_turn_codex_error(turn_context, &err);
-        let event = EventMsg::Error(
-            err.to_error_event(Some("Error running remote compact task".to_string())),
-        );
-        sess.send_event(turn_context, event).await;
+        // Auto compaction falls back to local compaction in `run_auto_compact` for
+        // recoverable failures, so stay silent there to avoid a spurious error when the
+        // fallback succeeds. Manual compaction (no fallback) and non-recoverable auto
+        // failures still surface the error to the user (and record it as a terminal error).
+        let recovered_by_auto_fallback = matches!(trigger, CompactionTrigger::Auto)
+            && remote_compaction_failure_is_recoverable_locally(&err);
+        if !recovered_by_auto_fallback {
+            sess.track_turn_codex_error(turn_context, &err);
+            let event = EventMsg::Error(
+                err.to_error_event(Some("Error running remote compact task".to_string())),
+            );
+            sess.send_event(turn_context, event).await;
+        }
         return Err(err);
     }
     Ok(())

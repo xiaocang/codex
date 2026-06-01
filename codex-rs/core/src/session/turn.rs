@@ -11,6 +11,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::collect_explicit_skill_mentions;
 use crate::compact::InitialContextInjection;
+use crate::compact::remote_compaction_failure_is_recoverable_locally;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
@@ -896,24 +897,38 @@ async fn run_auto_compact(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    if should_use_remote_compact_task(turn_context.provider.info()) {
-        if turn_context.features.enabled(Feature::RemoteCompactionV2) {
-            emit_compact_metric(
-                &sess.services.session_telemetry,
-                "remote_v2",
-                /*manual*/ false,
-            );
-            run_inline_remote_auto_compact_task_v2(
-                Arc::clone(sess),
-                Arc::clone(turn_context),
-                client_session,
-                initial_context_injection,
-                reason,
-                phase,
-            )
-            .await?;
-            return Ok(());
-        }
+    if !should_use_remote_compact_task(turn_context.provider.info()) {
+        emit_compact_metric(
+            &sess.services.session_telemetry,
+            "local",
+            /*manual*/ false,
+        );
+        return run_inline_auto_compact_task(
+            Arc::clone(sess),
+            Arc::clone(turn_context),
+            initial_context_injection,
+            reason,
+            phase,
+        )
+        .await;
+    }
+
+    let remote_result = if turn_context.features.enabled(Feature::RemoteCompactionV2) {
+        emit_compact_metric(
+            &sess.services.session_telemetry,
+            "remote_v2",
+            /*manual*/ false,
+        );
+        run_inline_remote_auto_compact_task_v2(
+            Arc::clone(sess),
+            Arc::clone(turn_context),
+            client_session,
+            initial_context_injection,
+            reason,
+            phase,
+        )
+        .await
+    } else {
         emit_compact_metric(
             &sess.services.session_telemetry,
             "remote",
@@ -927,23 +942,36 @@ async fn run_auto_compact(
             reason,
             phase,
         )
-        .await?;
-    } else {
-        emit_compact_metric(
-            &sess.services.session_telemetry,
-            "local",
-            /*manual*/ false,
-        );
-        run_inline_auto_compact_task(
-            Arc::clone(sess),
-            Arc::clone(turn_context),
-            initial_context_injection,
-            reason,
-            phase,
-        )
-        .await?;
+        .await
+    };
+
+    let Err(err) = remote_result else {
+        return Ok(());
+    };
+    // Remote `/responses/compact` fails at the transport layer for large requests (the
+    // session would otherwise get stuck at the compaction boundary). Recover by compacting
+    // locally instead of aborting the turn.
+    if !remote_compaction_failure_is_recoverable_locally(&err) {
+        return Err(err);
     }
-    Ok(())
+    warn!(
+        turn_id = %turn_context.sub_id,
+        error = %err,
+        "remote compaction failed; falling back to local compaction"
+    );
+    emit_compact_metric(
+        &sess.services.session_telemetry,
+        "local_fallback",
+        /*manual*/ false,
+    );
+    run_inline_auto_compact_task(
+        Arc::clone(sess),
+        Arc::clone(turn_context),
+        initial_context_injection,
+        reason,
+        phase,
+    )
+    .await
 }
 
 pub(super) fn collect_explicit_app_ids_from_skill_items(

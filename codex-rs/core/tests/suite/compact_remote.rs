@@ -1851,7 +1851,7 @@ async fn remote_compact_trims_tool_search_output_to_empty_tools_array() -> Resul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
+async fn auto_remote_compact_failure_falls_back_to_local() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1864,26 +1864,35 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
     .await?;
     let codex = harness.test().codex.clone();
 
-    mount_sse_once(
+    // Regular `/responses` traffic: the first turn (which pushes usage over the auto-compact
+    // limit), then the local fallback summarization, then the resumed second turn.
+    let responses_mock = responses::mount_sse_sequence(
         harness.server(),
-        sse(vec![
-            responses::ev_assistant_message("initial-assistant", "initial turn complete"),
-            responses::ev_completed_with_tokens("initial-response", /*total_tokens*/ 500_000),
-        ]),
+        vec![
+            sse(vec![
+                responses::ev_assistant_message("initial-assistant", "initial turn complete"),
+                responses::ev_completed_with_tokens(
+                    "initial-response",
+                    /*total_tokens*/ 500_000,
+                ),
+            ]),
+            sse(vec![
+                responses::ev_assistant_message("local-compact-summary", "LOCAL_FALLBACK_SUMMARY"),
+                responses::ev_completed("local-compact-response"),
+            ]),
+            sse(vec![
+                responses::ev_assistant_message("post-compact-assistant", "post compact reply"),
+                responses::ev_completed("post-compact-response"),
+            ]),
+        ],
     )
     .await;
 
-    let first_compact_mock = responses::mount_compact_json_once(
+    // Remote `/responses/compact` fails to parse (mirrors the transport-layer failure the
+    // endpoint hits for large requests, which also maps to `CodexErr::Stream`).
+    let remote_compact_mock = responses::mount_compact_json_once(
         harness.server(),
         serde_json::json!({ "output": "invalid compact payload shape" }),
-    )
-    .await;
-    let post_compact_turn_mock = mount_sse_once(
-        harness.server(),
-        sse(vec![
-            responses::ev_assistant_message("post-compact-assistant", "should not run"),
-            responses::ev_completed("post-compact-response"),
-        ]),
     )
     .await;
 
@@ -1913,37 +1922,21 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
             thread_settings: Default::default(),
         })
         .await?;
-
-    let error_message = wait_for_event_match(&codex, |event| match event {
-        EventMsg::Error(err) => Some(err.message.clone()),
-        _ => None,
-    })
-    .await;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
-    assert!(
-        error_message.contains("Error running remote compact task"),
-        "expected remote compact task error prefix, got {error_message}"
-    );
+    // Remote compaction was attempted exactly once before falling back.
     assert_eq!(
-        first_compact_mock.requests().len(),
+        remote_compact_mock.requests().len(),
         1,
-        "expected first remote compact attempt with incoming items"
+        "expected exactly one remote compact attempt before fallback"
     );
-    assert!(
-        post_compact_turn_mock.requests().is_empty(),
-        "expected agent loop to stop after compaction failure"
-    );
-
-    insta::assert_snapshot!(
-        "remote_pre_turn_compaction_failure_shapes",
-        format_labeled_requests_snapshot(
-            "Remote pre-turn auto-compaction parse failure: compaction request excludes the incoming user message and the turn stops.",
-            &[(
-                "Remote Compaction Request (Incoming User Excluded)",
-                &first_compact_mock.single_request()
-            ),]
-        )
+    // All three `/responses` calls ran: the first turn, the local fallback summarization, and
+    // the resumed second turn. If the loop had stopped on remote failure (the old behavior),
+    // the summary and resumed turn would never be requested.
+    assert_eq!(
+        responses_mock.requests().len(),
+        3,
+        "expected remote compaction failure to fall back to local compaction and resume the turn"
     );
 
     Ok(())

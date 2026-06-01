@@ -239,6 +239,36 @@ fn should_use_remote_compact_task_for_azure_provider() {
 
     assert!(should_use_remote_compact_task(&provider));
 }
+
+#[test]
+fn remote_compaction_failure_recoverable_for_transport_and_server_errors() {
+    // The user's literal error: transport "error sending request for url ..." maps to
+    // CodexErr::Stream, which must fall back to local compaction.
+    assert!(remote_compaction_failure_is_recoverable_locally(
+        &CodexErr::Stream("error sending request for url".to_string(), None)
+    ));
+    assert!(remote_compaction_failure_is_recoverable_locally(
+        &CodexErr::Timeout
+    ));
+    assert!(remote_compaction_failure_is_recoverable_locally(
+        &CodexErr::InternalServerError
+    ));
+}
+
+#[test]
+fn remote_compaction_failure_not_recoverable_for_terminal_errors() {
+    // Terminal conditions must surface / propagate, not silently fall back.
+    assert!(!remote_compaction_failure_is_recoverable_locally(
+        &CodexErr::ContextWindowExceeded
+    ));
+    assert!(!remote_compaction_failure_is_recoverable_locally(
+        &CodexErr::TurnAborted
+    ));
+    assert!(!remote_compaction_failure_is_recoverable_locally(
+        &CodexErr::Interrupted
+    ));
+}
+
 #[tokio::test]
 async fn process_compacted_history_replaces_developer_messages() {
     let compacted_history = vec![
