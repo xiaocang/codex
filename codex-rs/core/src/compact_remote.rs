@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use crate::Prompt;
 use crate::client::CompactConversationRequestSettings;
@@ -7,6 +8,7 @@ use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
 use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use crate::compact::remote_compaction_failure_is_recoverable_locally;
 use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
@@ -43,6 +45,7 @@ const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    turn_state: Arc<OnceLock<String>>,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -50,6 +53,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     run_remote_compact_task_inner(
         &sess,
         &turn_context,
+        Some(turn_state),
         initial_context_injection,
         CompactionTrigger::Auto,
         reason,
@@ -75,6 +79,7 @@ pub(crate) async fn run_remote_compact_task(
     run_remote_compact_task_inner(
         &sess,
         &turn_context,
+        /*turn_state*/ None,
         InitialContextInjection::DoNotInject,
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
@@ -87,6 +92,7 @@ pub(crate) async fn run_remote_compact_task(
 async fn run_remote_compact_task_inner(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     trigger: CompactionTrigger,
     reason: CompactionReason,
@@ -130,6 +136,7 @@ async fn run_remote_compact_task_inner(
     let result = run_remote_compact_task_inner_impl(
         sess,
         turn_context,
+        turn_state,
         initial_context_injection,
         compaction_metadata,
         &mut analytics_details,
@@ -150,11 +157,19 @@ async fn run_remote_compact_task_inner(
         .track(sess.as_ref(), status, codex_error, analytics_details)
         .await;
     if let Err(err) = result {
-        sess.track_turn_codex_error(turn_context, &err);
-        let event = EventMsg::Error(
-            err.to_error_event(Some("Error running remote compact task".to_string())),
-        );
-        sess.send_event(turn_context, event).await;
+        // Auto compaction falls back to local compaction in `run_auto_compact` for
+        // recoverable failures, so stay silent there to avoid a spurious error when the
+        // fallback succeeds. Manual compaction (no fallback) and non-recoverable auto
+        // failures still surface the error to the user (and record it as a terminal error).
+        let recovered_by_auto_fallback = matches!(trigger, CompactionTrigger::Auto)
+            && remote_compaction_failure_is_recoverable_locally(&err);
+        if !recovered_by_auto_fallback {
+            sess.track_turn_codex_error(turn_context, &err);
+            let event = EventMsg::Error(
+                err.to_error_event(Some("Error running remote compact task".to_string())),
+            );
+            sess.send_event(turn_context, event).await;
+        }
         return Err(err);
     }
     Ok(())
@@ -163,6 +178,7 @@ async fn run_remote_compact_task_inner(
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
@@ -237,6 +253,7 @@ async fn run_remote_compact_task_inner_impl(
         .compact_conversation_history(
             &prompt,
             &turn_context.model_info,
+            turn_state,
             CompactConversationRequestSettings {
                 effort: turn_context.reasoning_effort.clone(),
                 summary: turn_context.reasoning_summary,
